@@ -27,11 +27,13 @@ const tasksPerPage = 12;
 export default function TaskListPage() {
   const socketRef = useRef(null);
   const navigate = useNavigate();
-  const [username, setUsername] = useState(localStorage.getItem("username") || null);
+
+  const [username] = useState(localStorage.getItem("username") || null);
   const [tasks, setTasks] = useState([]);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [dateRange, setDateRange] = useState([null, null]);
+
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [volume, setVolume] = useState(0.7);
 
@@ -49,9 +51,14 @@ export default function TaskListPage() {
     if (!username) navigate("/login");
   }, [username, navigate]);
 
-  // ===== Sorting & Load Tasks =====
   const sortTasks = (list) => {
-    const order = { "Sedang Dikerjakan": 1, "Menunggu": 2, "Selesai": 3, "Ditolak": 4 };
+    const order = {
+      "Sedang Dikerjakan": 1,
+      "Menunggu": 2,
+      "Selesai": 3,
+      "Ditolak": 4,
+    };
+
     return (list || [])
       .filter(Boolean)
       .sort((a, b) => (order[a.status] || 99) - (order[b.status] || 99));
@@ -62,7 +69,7 @@ export default function TaskListPage() {
       const res = await fetch(`${API_BASE}/api/tasks`);
       const data = await res.json();
       setTasks(sortTasks(data));
-    } catch (err) {
+    } catch {
       toast.error("Gagal memuat data tugas!");
     }
   };
@@ -74,24 +81,29 @@ export default function TaskListPage() {
 
     socket.on("taskAdded", (task) => {
       if (!task) return;
-      setTasks((prev) => sortTasks([...prev.filter(Boolean), task]));
+      setTasks((prev) => sortTasks([...prev, task]));
       if (soundEnabled) infoSound.current.play();
     });
 
     socket.on("taskUpdated", (task) => {
-      if (!task || !task.id) return;
+      if (!task) return;
       setTasks((prev) =>
-        sortTasks(prev.map((t) => (t.id === task.id ? task : t)).filter(Boolean))
+        sortTasks(prev.map((t) => (t.id === task.id ? task : t)))
       );
       if (soundEnabled)
         (task.status === "Ditolak" ? errorSound : successSound).current.play();
     });
 
     return () => socket.disconnect();
-  }, [soundEnabled]);
+  }, [soundEnabled, volume]);
 
-  // ===== Status Change =====
-  const handleStatusChange = async (id, status, username, fotoAfterFile, keteranganTugas = "") => {
+  const handleStatusChange = async (
+    id,
+    status,
+    username,
+    fotoAfterFile,
+    keteranganTugas = ""
+  ) => {
     try {
       const formData = new FormData();
       formData.append("status", status);
@@ -99,7 +111,8 @@ export default function TaskListPage() {
 
       if (status === "Selesai") {
         if (!fotoAfterFile) return toast.error("Foto sesudah wajib diunggah!");
-        if (!keteranganTugas.trim()) return toast.error("Keterangan wajib diisi!");
+        if (!keteranganTugas.trim())
+          return toast.error("Keterangan wajib diisi!");
         formData.append("fotoAfter", fotoAfterFile);
         formData.append("keteranganTugas", keteranganTugas);
       }
@@ -115,7 +128,7 @@ export default function TaskListPage() {
       });
 
       const result = await res.json();
-      if (!res.ok) throw new Error(result.message || "Gagal update tugas.");
+      if (!res.ok) throw new Error(result.message);
 
       if (result.updatedTask) {
         setTasks((prev) =>
@@ -123,30 +136,29 @@ export default function TaskListPage() {
         );
       }
 
-      toast.success(`Status tugas berhasil diubah menjadi "${status}"`);
+      toast.success(`Status berhasil diubah ke "${status}"`);
       successSound.current.play();
     } catch (err) {
-      toast.error(err.message || "Terjadi kesalahan!");
+      toast.error(err.message);
       errorSound.current.play();
     }
   };
 
-  // ===== Filter =====
-  const filtered = (tasks || [])
-    .filter((t) => t && t.title)
+  const filtered = tasks
+    .filter((t) => t?.title?.toLowerCase().includes(search.toLowerCase()))
     .filter((t) => {
-      const matchesSearch = t.title.toLowerCase().includes(search.toLowerCase());
       const [start, end] = dateRange;
+      if (!start || !end) return true;
       const taskDate = new Date(t.tanggalTugas);
-      const matchesDate =
-        start && end ? taskDate >= start && taskDate <= end : true;
-      return matchesSearch && matchesDate;
+      return taskDate >= start && taskDate <= end;
     });
 
   const totalPages = Math.ceil(filtered.length / tasksPerPage) || 1;
-  const paginated = filtered.slice((page - 1) * tasksPerPage, page * tasksPerPage);
+  const paginated = filtered.slice(
+    (page - 1) * tasksPerPage,
+    page * tasksPerPage
+  );
 
-  // ===== Download Excel =====
   const normalizeUrl = (url) => {
     if (!url) return null;
     if (url.startsWith("http")) return url;
@@ -170,91 +182,78 @@ export default function TaskListPage() {
       ];
 
       sheet.getRow(1).font = { bold: true };
-      sheet.getRow(1).alignment = { vertical: "middle", horizontal: "center" };
+      let rowIndex = 2;
 
-      let currentRow = 2;
       for (const t of filtered) {
         sheet.addRow({
           Judul: t.title,
           Deskripsi: t.description || "-",
           Status: t.status,
           Pekerja: t.dikerjakanOleh || "-",
-          Tanggal: t.tanggalTugas ? new Date(t.tanggalTugas).toLocaleDateString() : "-",
+          Tanggal: t.tanggalTugas
+            ? new Date(t.tanggalTugas).toLocaleDateString()
+            : "-",
           Keterangan: t.keteranganTugas || "-",
         });
-        sheet.getRow(currentRow).height = 65;
 
-        const imgBeforeUrl = normalizeUrl(t.fotoBefore);
-        const imgAfterUrl = normalizeUrl(t.fotoAfter);
+        sheet.getRow(rowIndex).height = 65;
 
-        const insertImage = async (url, colIndex) => {
+        const insertImg = async (url, col) => {
           if (!url) return;
+
           try {
             const res = await fetch(url);
             const blob = await res.blob();
-            const buffer = await blob.arrayBuffer();
-            const imageId = workbook.addImage({
-              buffer,
-              extension: "jpeg",
+            const buf = await blob.arrayBuffer();
+            const ext = blob.type.includes("png") ? "png" : "jpeg";
+
+            const img = workbook.addImage({
+              buffer: buf,
+              extension: ext,
             });
-            sheet.addImage(imageId, {
-              tl: { col: colIndex - 1 + 0.9, row: currentRow - 1 + 0.05 },
+
+            sheet.addImage(img, {
+              tl: { col: col - 1 + 0.9, row: rowIndex - 1 + 0.05 },
               ext: { width: 90, height: 60 },
             });
-          } catch {
-            console.warn("Gagal menambahkan gambar:", url);
-          }
+          } catch {}
         };
 
-        await insertImage(imgBeforeUrl, 7);
-        await insertImage(imgAfterUrl, 8);
-        currentRow++;
-      }
+        await insertImg(normalizeUrl(t.fotoBefore), 7);
+        await insertImg(normalizeUrl(t.fotoAfter), 8);
 
-      sheet.eachRow((row) => {
-        row.eachCell((cell) => {
-          cell.border = {
-            top: { style: "thin" },
-            left: { style: "thin" },
-            bottom: { style: "thin" },
-            right: { style: "thin" },
-          };
-          cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
-        });
-      });
+        rowIndex++;
+      }
 
       const buffer = await workbook.xlsx.writeBuffer();
       const blob = new Blob([buffer], {
         type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       });
+
       const link = document.createElement("a");
       link.href = window.URL.createObjectURL(blob);
       link.download = "Daftar_Tugas.xlsx";
       link.click();
 
       toast.success("Excel berhasil diunduh!");
-    } catch (err) {
-      console.error("Gagal ekspor Excel:", err);
+    } catch {
       toast.error("Gagal ekspor Excel!");
     }
   };
 
-  // ===== Helper: Batasi Huruf =====
-  const truncate = (text, max) => {
-    if (!text) return "";
-    if (text.length <= max) return text;
-    return text.slice(0, max).trim() + "...";
-  };
+  const truncate = (txt, max) =>
+    !txt ? "" : txt.length <= max ? txt : txt.slice(0, max).trim() + "...";
 
-  // ===== Reset Filter =====
   const handleResetFilter = () => {
     setDateRange([null, null]);
-    toast.info("Filter tanggal direset — semua tugas ditampilkan.");
+    setPage(1);
+    toast.info("Filter tanggal direset");
   };
 
   return (
     <Box sx={{ minHeight: "100vh", background: "#f7fbff", pb: 6 }}>
       <ToastContainer position="bottom-right" autoClose={2500} />
+
       <HeaderBar
         search={search}
         setSearch={setSearch}
@@ -265,44 +264,55 @@ export default function TaskListPage() {
         setVolume={setVolume}
       />
 
-      <Container maxWidth="lg" sx={{ pt: 4 }}>
+      <Container maxWidth="xl" sx={{ pt: 4 }}>
         {/* Statistik */}
         <Grid container spacing={2} mb={3}>
           <Grid item xs={12} sm={6} md={3}>
-            <StatCard title="Total" value={tasks.filter(Boolean).length} />
+            <StatCard title="Total" value={tasks.length} />
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
             <StatCard
               title="Aktif"
               value={tasks.filter(
-                (t) => t && (t.status === "Menunggu" || t.status === "Sedang Dikerjakan")
+                (t) =>
+                  t.status === "Menunggu" || t.status === "Sedang Dikerjakan"
               ).length}
             />
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
-            <StatCard title="Selesai" value={tasks.filter((t) => t && t.status === "Selesai").length} color="#28a745" />
+            <StatCard
+              title="Selesai"
+              color="#28a745"
+              value={tasks.filter((t) => t.status === "Selesai").length}
+            />
           </Grid>
           <Grid item xs={12} sm={6} md={3}>
-            <StatCard title="Ditolak" value={tasks.filter((t) => t && t.status === "Ditolak").length} color="#d9534f" />
+            <StatCard
+              title="Ditolak"
+              color="#d9534f"
+              value={tasks.filter((t) => t.status === "Ditolak").length}
+            />
           </Grid>
         </Grid>
 
-        <ProgressOverview tasks={tasks.filter(Boolean)} />
+        <ProgressOverview tasks={tasks} />
 
         {/* Filter */}
         <Paper sx={{ p: 2, mb: 3 }}>
           <LocalizationProvider dateAdapter={AdapterDateFns}>
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems="center">
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={2}
+              alignItems="center"
+            >
               <DateRangePicker
                 calendars={1}
                 value={dateRange}
-                onChange={(newValue) => setDateRange(newValue)}
-                localeText={{ start: "Dari Tanggal", end: "Sampai" }}
-                slotProps={{
-                  textField: { size: "small" },
-                }}
+                onChange={(val) => setDateRange(val ?? [null, null])}
+                localeText={{ start: "Dari", end: "Sampai" }}
+                slotProps={{ textField: { size: "small" } }}
               />
-              <Button variant="outlined" color="secondary" onClick={handleResetFilter}>
+              <Button variant="outlined" onClick={handleResetFilter}>
                 Reset Filter
               </Button>
               <Button variant="outlined" onClick={downloadExcel}>
@@ -314,15 +324,26 @@ export default function TaskListPage() {
 
         {/* Tambah Tugas */}
         <Paper sx={{ p: 3, mb: 3 }}>
-          <Button fullWidth variant="contained" onClick={() => navigate("/tambah-tugas")}>
+          <Button
+            fullWidth
+            variant="contained"
+            size="large"
+            onClick={() => navigate("/tambah-tugas")}
+          >
             Tambah Tugas
           </Button>
         </Paper>
 
         {/* Daftar Tugas */}
-        <Grid container spacing={2} mb={3}>
-          {paginated.filter(Boolean).map((t) => (
-            <Grid key={t.id} item xs={12} sm={6} md={4} lg={3}>
+        <Grid
+          container
+          spacing={2}
+          mb={3}
+          justifyContent="center"
+          alignItems="stretch"
+        >
+          {paginated.map((t) => (
+            <Grid key={t.id} item xs={12} sm={10} md={6} lg={5} xl={4}>
               <TaskCard
                 task={{
                   ...t,
@@ -336,8 +357,12 @@ export default function TaskListPage() {
           ))}
         </Grid>
 
-        <Stack alignItems="center">
-          <Pagination count={totalPages} page={page} onChange={(e, v) => setPage(v)} />
+        <Stack alignItems="center" mt={2}>
+          <Pagination
+            count={totalPages}
+            page={page}
+            onChange={(e, v) => setPage(v)}
+          />
         </Stack>
       </Container>
     </Box>
